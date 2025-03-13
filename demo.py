@@ -203,7 +203,7 @@ def main():
                     mesh_alpha=0.1,
                     is_right=is_right_flag,
                     overlay_type=args.overlay_type,        # 'joint' 또는 'tactile'
-                    joint_sphere_radius=0.005,                 # joint sphere의 반지름 (필요시 조정)
+                    joint_sphere_radius=0.02,                 # joint sphere의 반지름 (필요시 조정)
                     joint_alpha=1.0,
                     joint_cmap='Reds'
                 )
@@ -222,7 +222,7 @@ def main():
                         mesh_alpha=0.1,
                         is_right=is_right_flag,
                         overlay_type=args.overlay_type,
-                        joint_sphere_radius=0.005,
+                        joint_sphere_radius=0.02,
                         joint_alpha=1.0,
                         joint_cmap='Reds'
                     )
@@ -257,7 +257,7 @@ def main():
                 tactile_cmap='Reds',
                 mesh_alpha=0.3,  # 메인 손 메쉬를 반투명하게 설정
                 overlay_type=args.overlay_type,
-                joint_sphere_radius=0.005,
+                joint_sphere_radius=0.02,
                 joint_alpha=1.0,
                 joint_cmap='Reds'
             )
