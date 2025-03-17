@@ -172,34 +172,36 @@ class Renderer:
         self.faces_left = self.faces[:, [0, 2, 1]]
 
     def __call__(self,
-                vertices: np.array,
-                camera_translation: np.array,
-                image: torch.Tensor,
-                full_frame: bool = False,
-                imgname: Optional[str] = None,
-                side_view=False, rot_angle=90,
-                mesh_base_color=(1.0, 1.0, 0.9),
-                scene_bg_color=(0, 0, 0),
-                return_rgba=False,
-                mesh_alpha=1.0,
-                # tactile 관련
-                tactile_values: Optional[List[float]] = None,
-                tactile_vertex_groups: Optional[dict] = None,
-                tactile_opacity: float = 0.7,
-                tactile_cmap: str = 'Reds',
-                is_right: int = 1,
-                # 새 overlay 옵션: 'skin' (기존) 또는 'joint' (skeleton joint 기반)
-                overlay_type: str = 'skin',
-                joint_sphere_radius: float = 5.0,
-                joint_alpha: float = 1.0,
-                joint_cmap: str = 'Reds',
-                # 센서값 threshold (0~1)
-                tactile_sensor_threshold: float = 0.5
-                ) -> np.array:
+                 vertices: np.array,
+                 camera_translation: np.array,
+                 image: torch.Tensor,
+                 full_frame: bool = False,
+                 imgname: Optional[str] = None,
+                 side_view=False, rot_angle=90,
+                 mesh_base_color=(1.0, 1.0, 0.9),
+                 scene_bg_color=(0, 0, 0),
+                 return_rgba=False,
+                 mesh_alpha=1.0,
+                 # tactile 관련
+                 tactile_values: Optional[List[float]] = None,
+                 tactile_vertex_groups: Optional[dict] = None,
+                 tactile_opacity: float = 0.7,
+                 tactile_cmap: str = 'Reds',
+                 is_right: int = 1,
+                 # overlay 관련: 'joint', 'skin_point', 'skin_mesh'
+                 overlay_type: str = 'skin_mesh',
+                 joint_sphere_radius: float = 5.0,
+                 joint_alpha: float = 1.0,
+                 joint_cmap: str = 'Reds',
+                 # 센서값 threshold (0~1)
+                 tactile_sensor_threshold: float = 0.5,
+                 # skeleton joint 기반 overlay 시, 21개 joint 좌표 (np.array, shape: (21,3))
+                 joint_keypoints_3d: Optional[np.ndarray] = None
+                 ) -> np.array:
         """
         2-패스 렌더링으로 단일 손을 시각화.
         1) 메인 손 메쉬만 렌더 -> main_rgba
-        2) overlay (촉각 또는 joint 기반)만 렌더 -> overlay_rgba
+        2) overlay (촉각 또는 joint/skin_point 방식)만 렌더 -> overlay_rgba
         3) alpha_composite -> final_rgba
         4) full_frame이 아니면 배경 이미지와 합성하여 반환
         """
@@ -226,23 +228,49 @@ class Renderer:
         main_rgba = self._render_scene(scene_main, W, H)
 
         # --------------------
-        # (3) overlay 렌더링 (joint 기반 또는 기존 tactile 기반)
+        # (3) overlay 렌더링 (overlay_type에 따라)
         # --------------------
         overlay_rgba = None
         if overlay_type == 'joint' and (tactile_values is not None) and (tactile_vertex_groups is not None):
             scene_overlay = pyrender.Scene(bg_color=[0, 0, 0, 0], ambient_light=(0, 0, 0))
             cam_pose_overlay, cam_node_overlay = self._add_camera_and_lights(scene_overlay, W, H, camera_translation)
-            joint_meshes = self._build_joint_spheres(vertices, is_right, side_view, rot_angle,
-                                                     tactile_vertex_groups, tactile_values,
-                                                     joint_sphere_radius, joint_cmap, joint_alpha,
-                                                     camera_translation, tactile_sensor_threshold)
+            if joint_keypoints_3d is not None:
+                joint_meshes = self._build_joint_spheres_from_skeleton(
+                    vertices, is_right, side_view, rot_angle,
+                    tactile_values, joint_keypoints_3d, tactile_vertex_groups,
+                    joint_sphere_radius, joint_cmap, joint_alpha,
+                    camera_translation, tactile_sensor_threshold
+                )
+            else:
+                joint_meshes = self._build_joint_spheres(
+                    vertices, is_right, side_view, rot_angle,
+                    tactile_vertex_groups, tactile_values,
+                    joint_sphere_radius, joint_cmap, joint_alpha,
+                    camera_translation, tactile_sensor_threshold
+                )
             for m in joint_meshes:
                 scene_overlay.add(m)
             for node in create_raymond_lights():
                 scene_overlay.add_node(node)
             overlay_rgba = self._render_scene(scene_overlay, W, H)
             final_rgba = alpha_composite(overlay_rgba, main_rgba)
+        elif overlay_type == 'skin_point' and (tactile_values is not None) and (tactile_vertex_groups is not None):
+            scene_overlay = pyrender.Scene(bg_color=[0, 0, 0, 0], ambient_light=(0, 0, 0))
+            cam_pose_overlay, cam_node_overlay = self._add_camera_and_lights(scene_overlay, W, H, camera_translation)
+            point_meshes = self._build_skin_points(
+                vertices, is_right, side_view, rot_angle,
+                tactile_values, tactile_vertex_groups,
+                joint_sphere_radius, joint_cmap, joint_alpha,
+                tactile_sensor_threshold
+            )
+            for m in point_meshes:
+                scene_overlay.add(m)
+            for node in create_raymond_lights():
+                scene_overlay.add_node(node)
+            overlay_rgba = self._render_scene(scene_overlay, W, H)
+            final_rgba = alpha_composite(overlay_rgba, main_rgba)
         elif (tactile_values is not None) and (tactile_vertex_groups is not None):
+            # skin_mesh mode (기존 face 기반 overlay)
             scene_overlay = pyrender.Scene(bg_color=[0, 0, 0, 0], ambient_light=(0.0, 0.0, 0.0))
             overlay_meshes = self._build_tactile_overlays(
                 vertices, is_right, side_view, rot_angle,
@@ -341,8 +369,7 @@ class Renderer:
                               camera_translation,
                               tactile_sensor_threshold):
         """
-        각 joint (vertex group 평균 위치)에 대해, 센서값이 threshold 이상일 때만
-        카메라와의 거리에 따라 구의 크기를 조절하여 생성
+        기존 tactile_vertex_groups 기반 joint overlay (tactile sensor 값에 따라 구의 크기를 조절)
         """
         import matplotlib.colors as mcolors
         import matplotlib.pyplot as plt
@@ -386,6 +413,125 @@ class Renderer:
             sphere_mesh = pyrender.Mesh.from_trimesh(sphere, material=material)
             sphere_meshes.append(sphere_mesh)
         return sphere_meshes
+
+    def _build_joint_spheres_from_skeleton(self, vertices, is_right, side_view, rot_angle,
+                                tactile_values, joint_keypoints_3d, tactile_vertex_groups,
+                                sphere_radius, joint_cmap, joint_alpha,
+                                camera_translation,
+                                tactile_sensor_threshold):
+        """
+        skeleton에서 추출한 21개 joint 좌표를 사용하여 구를 생성하고,
+        tactile sensor 값이 24개인 경우, 나머지 3개는 tactile_vertex_groups에서 Palm7, Palm8, Palm9의 평균 위치로 표시.
+        """
+        import matplotlib.colors as mcolors
+        import matplotlib.pyplot as plt
+
+        sphere_meshes = []
+        norm = mcolors.Normalize(vmin=0, vmax=1)
+        cmap_func = plt.get_cmap(joint_cmap)
+
+        # joint_keypoints_3d에도 mesh와 동일한 변환 적용
+        transformed_joints = joint_keypoints_3d.copy()
+        if side_view:
+            rot_sv = trimesh.transformations.rotation_matrix(np.radians(rot_angle), [0, 1, 0])
+            transformed_joints = trimesh.transformations.transform_points(transformed_joints, rot_sv)
+        rot180 = trimesh.transformations.rotation_matrix(np.radians(180), [1, 0, 0])
+        transformed_joints = trimesh.transformations.transform_points(transformed_joints, rot180)
+
+        # 첫 21개: skeleton joint 좌표
+        for i in range(21):
+            sensor_val = tactile_values[i]
+            if sensor_val < tactile_sensor_threshold:
+                continue
+            joint_pos = transformed_joints[i]
+            ref_distance = np.linalg.norm(camera_translation) + 1e-6
+            distance = np.linalg.norm(joint_pos - camera_translation) + 1e-6
+            scaled_radius = sphere_radius * (ref_distance / (distance)**1.7)
+            rgba = cmap_func(norm(sensor_val))
+            color = (*rgba[:3], joint_alpha)
+            sphere = trimesh.creation.icosphere(subdivisions=2, radius=scaled_radius)
+            sphere.apply_translation(joint_pos)
+            material = pyrender.MetallicRoughnessMaterial(
+                metallicFactor=0.0,
+                alphaMode='BLEND',
+                baseColorFactor=color
+            )
+            sphere_mesh = pyrender.Mesh.from_trimesh(sphere, material=material)
+            sphere_meshes.append(sphere_mesh)
+
+        # 나머지 3개 sensor는 tactile_vertex_groups에서 Palm7, Palm8, Palm9 사용
+        extra_keys = ["Palm7", "Palm8", "Palm9"]
+        vtx = vertices.copy()
+        if side_view:
+            rot_sv = trimesh.transformations.rotation_matrix(np.radians(rot_angle), [0, 1, 0])
+            vtx = trimesh.transformations.transform_points(vtx, rot_sv)
+        rot180 = trimesh.transformations.rotation_matrix(np.radians(180), [1, 0, 0])
+        vtx = trimesh.transformations.transform_points(vtx, rot180)
+        for j, key in enumerate(extra_keys):
+            sensor_index = 21 + j
+            sensor_val = tactile_values[sensor_index]
+            if sensor_val < tactile_sensor_threshold:
+                continue
+            indices = tactile_vertex_groups.get(key, [])
+            if len(indices) == 0:
+                continue
+            group_vtx = vtx[indices]
+            center_pos = group_vtx.mean(axis=0)
+            ref_distance = np.linalg.norm(camera_translation) + 1e-6
+            distance = np.linalg.norm(center_pos - camera_translation) + 1e-6
+            scaled_radius = sphere_radius * (ref_distance / (distance)**1.7)
+            rgba = cmap_func(norm(sensor_val))
+            color = (*rgba[:3], joint_alpha)
+            sphere = trimesh.creation.icosphere(subdivisions=2, radius=scaled_radius)
+            sphere.apply_translation(center_pos)
+            material = pyrender.MetallicRoughnessMaterial(
+                metallicFactor=0.0,
+                alphaMode='BLEND',
+                baseColorFactor=color
+            )
+            sphere_mesh = pyrender.Mesh.from_trimesh(sphere, material=material)
+            sphere_meshes.append(sphere_mesh)
+        return sphere_meshes
+
+
+    def _build_skin_points(self, vertices, is_right, side_view, rot_angle,
+                           tactile_values, tactile_vertex_groups,
+                           point_radius, joint_cmap, joint_alpha,
+                           tactile_sensor_threshold):
+        """
+        tactile_vertex_groups 기반 각 그룹의 평균 위치에 고정 크기(point_radius)의 구체(포인트)를 생성.
+        """
+        import matplotlib.colors as mcolors
+        import matplotlib.pyplot as plt
+        point_meshes = []
+        norm = mcolors.Normalize(vmin=0, vmax=1)
+        cmap_func = plt.get_cmap(joint_cmap)
+
+        vtx = vertices.copy()
+        if side_view:
+            rot_sv = trimesh.transformations.rotation_matrix(np.radians(rot_angle), [0, 1, 0])
+            vtx = trimesh.transformations.transform_points(vtx, rot_sv)
+        rot180 = trimesh.transformations.rotation_matrix(np.radians(180), [1, 0, 0])
+        vtx = trimesh.transformations.transform_points(vtx, rot180)
+
+        for (group_name, indices), sensor_val in zip(tactile_vertex_groups.items(), tactile_values):
+            if sensor_val < tactile_sensor_threshold:
+                continue
+            group_vtx = vtx[indices]
+            center_pos = group_vtx.mean(axis=0)
+            rgba = cmap_func(norm(sensor_val))
+            color = (*rgba[:3], joint_alpha)
+            # 고정된 point_radius 사용
+            sphere = trimesh.creation.icosphere(subdivisions=2, radius=point_radius)
+            sphere.apply_translation(center_pos)
+            material = pyrender.MetallicRoughnessMaterial(
+                metallicFactor=0.0,
+                alphaMode='BLEND',
+                baseColorFactor=color
+            )
+            sphere_mesh = pyrender.Mesh.from_trimesh(sphere, material=material)
+            point_meshes.append(sphere_mesh)
+        return point_meshes
 
     def _add_camera_and_lights(self, scene, width, height, camera_translation):
         cam_pose = np.eye(4)
@@ -485,17 +631,20 @@ class Renderer:
                             tactile_cmap: str = 'viridis',
                             tactile_opacity: float = 0.7,
                             mesh_alpha: float = 0.3,
-                            # 새 joint overlay 관련
-                            overlay_type: str = 'skin',
+                            # 새 overlay 관련
+                            overlay_type: str = 'skin_mesh',
                             joint_sphere_radius: float = 5.0,
                             joint_alpha: float = 1.0,
                             joint_cmap: str = 'viridis',
+                            # skeleton joint overlay 시, 각 사람별 joint 좌표 (List[np.array], 각 np.array shape: (21,3))
+                            joint_keypoints_3d_list: Optional[List[np.array]] = None,
                             # 센서값 threshold (0~1)
                             tactile_sensor_threshold: float = 0.5):
         """
         여러 손(people)을 동시에 렌더링. overlay_type에 따라
-        - 'tactile': face-based overlay (기존)
-        - 'joint':   vertex group의 평균 위치에 구(icosphere)로 표시
+        - 'joint':   skeleton joint 기반 overlay (추가 sensor 값은 tactile_vertex_groups의 Palm7,8,9 사용)
+        - 'skin_point': tactile sensor 그룹의 평균 위치에 point marker 표시
+        - 'skin_mesh': 기존 face-based overlay 방식
         """
         import matplotlib.colors as mcolors
         import matplotlib.pyplot as plt
@@ -543,21 +692,18 @@ class Renderer:
         main_color = main_color.astype(np.float32) / 255.0
 
         # -------------------------------------------------------
-        # (2) overlay (joint or tactile)를 별도 scene에 렌더링
+        # (2) overlay (joint 또는 tactile)를 별도 scene에 렌더링
         # -------------------------------------------------------
-        # overlay가 필요 없다면, 그냥 main_color 반환
         if (tactile_values_list is None) or (tactile_vertex_groups is None):
             renderer.delete()
             return main_color  # 오버레이 없음
 
-        # overlay scene 생성
         scene_overlay = pyrender.Scene(bg_color=[0, 0, 0, 0], ambient_light=(0, 0, 0))
         cam_node_overlay = pyrender.Node(camera=camera, matrix=camera_pose)
         scene_overlay.add_node(cam_node_overlay)
         for node in create_raymond_lights():
             scene_overlay.add_node(node)
 
-        # ---- (2A) overlay_type = 'joint'인 경우 ----
         if overlay_type == 'joint':
             norm = mcolors.Normalize(vmin=0, vmax=1)
             cmap_func = plt.get_cmap(joint_cmap)
@@ -574,25 +720,111 @@ class Renderer:
                 rot180 = trimesh.transformations.rotation_matrix(np.radians(180), [1, 0, 0])
                 vtx = trimesh.transformations.transform_points(vtx, rot180)
 
-                # 기준 거리: 해당 손에 대한 translation의 norm
+                ref_distance = np.linalg.norm(ttt) + 1e-6
+
+                # skeleton joint overlay: joint_keypoints_3d_list가 제공되면 사용, 아니면 tactile_vertex_groups 기반 사용
+                if (joint_keypoints_3d_list is not None) and (joint_keypoints_3d_list[i] is not None):
+                    # skeleton joint 좌표를 복사
+                    joint_keypoints = joint_keypoints_3d_list[i].copy()
+                    # 왼손인 경우 x축 flip 적용
+                    if sss == 0:
+                        joint_keypoints[:, 0] = -joint_keypoints[:, 0]
+                    # 손 메쉬와 동일하게 카메라 translation 추가
+                    joint_keypoints = joint_keypoints + ttt.copy()
+                    # rot_angle 및 180도 회전 적용 (메쉬와 동일한 변환)
+                    joint_keypoints = trimesh.transformations.transform_points(joint_keypoints, rot)
+                    joint_keypoints = trimesh.transformations.transform_points(joint_keypoints, rot180)
+
+                    # 첫 21개: skeleton joint 좌표 사용하여 구 생성
+                    for j in range(21):
+                        if sensor_vals[j] < tactile_sensor_threshold:
+                            continue
+                        joint_pos = joint_keypoints[j]
+                        distance = np.linalg.norm(joint_pos) + 1e-6
+                        scaled_radius = joint_sphere_radius * (ref_distance / (distance)**1.7)
+                        rgba = cmap_func(norm(sensor_vals[j]))
+                        color = (*rgba[:3], joint_alpha)
+                        sphere = trimesh.creation.icosphere(subdivisions=2, radius=scaled_radius)
+                        sphere.apply_translation(joint_pos)
+                        mat = pyrender.MetallicRoughnessMaterial(
+                            metallicFactor=0.0,
+                            alphaMode='BLEND',
+                            baseColorFactor=color,
+                        )
+                        mesh_sphere = pyrender.Mesh.from_trimesh(sphere, material=mat)
+                        scene_overlay.add(mesh_sphere)
+                    # extra 3 sensor 값은 기존 방식(vtx 기반)으로 처리
+                    extra_keys = ["Palm7", "Palm8", "Palm9"]
+                    for j, key in enumerate(extra_keys):
+                        sensor_index = 21 + j
+                        if sensor_vals[sensor_index] < tactile_sensor_threshold:
+                            continue
+                        indices = tactile_vertex_groups.get(key, [])
+                        if len(indices) == 0:
+                            continue
+                        group_vtx = vtx[indices]
+                        center_pos = group_vtx.mean(axis=0)
+                        distance = np.linalg.norm(center_pos) + 1e-6
+                        scaled_radius = joint_sphere_radius * (ref_distance / (distance)**1.7)
+                        rgba = cmap_func(norm(sensor_vals[sensor_index]))
+                        color = (*rgba[:3], joint_alpha)
+                        sphere = trimesh.creation.icosphere(subdivisions=2, radius=scaled_radius)
+                        sphere.apply_translation(center_pos)
+                        mat = pyrender.MetallicRoughnessMaterial(
+                            metallicFactor=0.0,
+                            alphaMode='BLEND',
+                            baseColorFactor=color,
+                        )
+                        mesh_sphere = pyrender.Mesh.from_trimesh(sphere, material=mat)
+                        scene_overlay.add(mesh_sphere)
+                else:
+                    # tactile_vertex_groups 기반 joint overlay (기존 방식)
+                    for group_idx, (group_name, indices) in enumerate(tactile_vertex_groups.items()):
+                        if sensor_vals[group_idx] < tactile_sensor_threshold:
+                            continue
+                        rgba = cmap_func(norm(sensor_vals[group_idx]))
+                        color = (*rgba[:3], joint_alpha)
+                        group_vtx = vtx[indices]
+                        center_pos = group_vtx.mean(axis=0)
+                        distance = np.linalg.norm(center_pos) + 1e-6
+                        scaled_radius = joint_sphere_radius * (ref_distance / (distance)**1.7)
+                        sphere = trimesh.creation.icosphere(subdivisions=2, radius=scaled_radius)
+                        sphere.apply_translation(center_pos)
+                        mat = pyrender.MetallicRoughnessMaterial(
+                            metallicFactor=0.0,
+                            alphaMode='BLEND',
+                            baseColorFactor=color,
+                        )
+                        mesh_sphere = pyrender.Mesh.from_trimesh(sphere, material=mat)
+                        scene_overlay.add(mesh_sphere)
+
+        elif overlay_type == 'skin_point':
+            norm = mcolors.Normalize(vmin=0, vmax=1)
+            cmap_func = plt.get_cmap(joint_cmap)
+            for i, (vvv, ttt, sss) in enumerate(zip(vertices, cam_t, is_right)):
+                sensor_vals = tactile_values_list[i]
+                vtx = vvv.copy()
+                if sss == 0:
+                    vtx[:, 0] = -vtx[:, 0]
+                vtx = vtx + ttt.copy()
+                rot = trimesh.transformations.rotation_matrix(np.radians(rot_angle), rot_axis)
+                vtx = trimesh.transformations.transform_points(vtx, rot)
+                rot180 = trimesh.transformations.rotation_matrix(np.radians(180), [1, 0, 0])
+                vtx = trimesh.transformations.transform_points(vtx, rot180)
+
                 ref_distance = np.linalg.norm(ttt) + 1e-6
 
                 for group_idx, (group_name, indices) in enumerate(tactile_vertex_groups.items()):
-                    # 센서값 체크: threshold 미만이면 건너뛰기
                     if sensor_vals[group_idx] < tactile_sensor_threshold:
                         continue
-
                     rgba = cmap_func(norm(sensor_vals[group_idx]))
                     color = (*rgba[:3], joint_alpha)
-
                     group_vtx = vtx[indices]
                     center_pos = group_vtx.mean(axis=0)
-                    # 카메라(원점)과의 거리 계산 후 스케일 적용
                     distance = np.linalg.norm(center_pos) + 1e-6
                     scaled_radius = joint_sphere_radius * (ref_distance / (distance)**1.7)
-                    sphere = trimesh.creation.icosphere(subdivisions=2, radius=scaled_radius)
+                    sphere = trimesh.creation.icosphere(subdivisions=2, radius=scaled_radius)                    # 고정된 반지름 사용
                     sphere.apply_translation(center_pos)
-
                     mat = pyrender.MetallicRoughnessMaterial(
                         metallicFactor=0.0,
                         alphaMode='BLEND',
@@ -600,9 +832,7 @@ class Renderer:
                     )
                     mesh_sphere = pyrender.Mesh.from_trimesh(sphere, material=mat)
                     scene_overlay.add(mesh_sphere)
-
-        # ---- (2B) overlay_type = 'skin'인 경우 (기존 face-based) ----
-        else:
+        else:  # skin_mesh
             norm = mcolors.Normalize(vmin=0, vmax=1)
             cmap_func = plt.get_cmap(tactile_cmap)
             for i, (vvv, ttt, sss) in enumerate(zip(vertices, cam_t, is_right)):
@@ -619,7 +849,6 @@ class Renderer:
                 faces_to_use = self.faces if sss else self.faces_left
 
                 for group_idx, (group_name, indices) in enumerate(tactile_vertex_groups.items()):
-                    # 센서값이 threshold 미만이면 건너뛰기
                     if sensor_vals[group_idx] < tactile_sensor_threshold:
                         continue
 
@@ -642,7 +871,6 @@ class Renderer:
                     )
                     sub_mesh = pyrender.Mesh.from_trimesh(sub_tri, material=sub_mat)
                     scene_overlay.add(sub_mesh)
-
         # overlay 렌더링
         overlay_color, _ = renderer.render(scene_overlay, flags=pyrender.RenderFlags.RGBA)
         overlay_color = overlay_color.astype(np.float32) / 255.0
@@ -654,7 +882,6 @@ class Renderer:
 
         renderer.delete()
         return final_rgba
-
 
     def add_lighting(self, scene, cam_node, color=np.ones(3), intensity=1.0):
         light_poses = get_light_poses()

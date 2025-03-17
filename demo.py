@@ -30,8 +30,8 @@ def main():
     parser.add_argument('--rescale_factor', type=float, default=2.0, help='Factor for padding the bbox')
     parser.add_argument('--body_detector', type=str, default='vitdet', choices=['vitdet', 'regnety'], help='Using regnety improves runtime and reduces memory')
     parser.add_argument('--file_type', nargs='+', default=['*.jpg', '*.png'], help='List of file extensions to consider')
-    # 새 overlay_type 인자 추가: 'tactile' (기존) 또는 'joint' (skeleton joint 기반)
-    parser.add_argument('--overlay_type', type=str, default='joint', choices=['skin', 'joint'], help='Overlay 방식을 선택 (skin: 기존, joint: skeleton joint 기반)')
+    # overlay_type 인자 수정: 'joint', 'skin_point', 'skin_mesh'
+    parser.add_argument('--overlay_type', type=str, default='joint', choices=['joint', 'skin_point', 'skin_mesh'], help='Overlay 방식을 선택 (joint: skeleton joint 기반, skin_point: point 표시, skin_mesh: 기존 face 기반)')
     args = parser.parse_args()
 
     # Download and load checkpoints
@@ -157,6 +157,7 @@ def main():
         all_cam_t = []
         all_right = []
         all_tactile_values = []   # tactile 값을 저장할 리스트 추가
+        all_joint_keypoints = []  # skeleton joint 좌표 저장 리스트 (각각 np.array, shape: (21,3))
 
         for batch in dataloader:
             batch = recursive_to(batch, device)
@@ -191,6 +192,10 @@ def main():
                 # 단일 렌더링용 sensor overlay (데모용 랜덤 값)
                 tactile_values = np.random.rand(24).tolist()
                 is_right_flag = batch['right'][n].cpu().numpy()
+                # 만약 overlay_type이 'joint'라면, skeleton joint keypoints를 전달 (21개)
+                joint_keypoints = None
+                if args.overlay_type == 'joint':
+                    joint_keypoints = out['pred_keypoints_3d'][n].detach().cpu().numpy()
                 tactile_img = renderer(
                     out['pred_vertices'][n].detach().cpu().numpy(),
                     out['pred_cam_t'][n].detach().cpu().numpy(),
@@ -202,10 +207,12 @@ def main():
                     tactile_opacity=1.0,
                     mesh_alpha=0.1,
                     is_right=is_right_flag,
-                    overlay_type=args.overlay_type,        # 'joint' 또는 'tactile'
+                    overlay_type=args.overlay_type,        # 'joint', 'skin_point' 또는 'skin_mesh'
                     joint_sphere_radius=0.02,                 # joint sphere의 반지름 (필요시 조정)
                     joint_alpha=1.0,
-                    joint_cmap='Reds'
+                    joint_cmap='Reds',
+                    joint_keypoints_3d=joint_keypoints,
+                    tactile_sensor_threshold=0.5
                 )
 
                 if args.side_view:
@@ -224,7 +231,9 @@ def main():
                         overlay_type=args.overlay_type,
                         joint_sphere_radius=0.02,
                         joint_alpha=1.0,
-                        joint_cmap='Reds'
+                        joint_cmap='Reds',
+                        joint_keypoints_3d=joint_keypoints,
+                        tactile_sensor_threshold=0.5
                     )
 
                     final_img = np.concatenate([input_patch_np, regression_img, tactile_img, side_img], axis=1)
@@ -239,6 +248,7 @@ def main():
                 all_cam_t.append(cam_t)
                 all_right.append(is_right_flag)
                 all_tactile_values.append(tactile_values)
+                all_joint_keypoints.append(joint_keypoints)
 
                 if args.save_mesh:
                     camera_translation = cam_t.copy()
@@ -259,7 +269,9 @@ def main():
                 overlay_type=args.overlay_type,
                 joint_sphere_radius=0.02,
                 joint_alpha=1.0,
-                joint_cmap='Reds'
+                joint_cmap='Reds',
+                joint_keypoints_3d_list=all_joint_keypoints,
+                tactile_sensor_threshold=0
             )
             cam_view = renderer.render_rgba_multiple(all_verts, cam_t=all_cam_t, render_res=img_size[n],
                                                      is_right=all_right, **misc_args)
