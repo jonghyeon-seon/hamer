@@ -212,7 +212,7 @@ def main():
                     joint_alpha=1.0,
                     joint_cmap='Reds',
                     joint_keypoints_3d=joint_keypoints,
-                    tactile_sensor_threshold=0.5
+                    tactile_sensor_threshold=0
                 )
 
                 if args.side_view:
@@ -233,7 +233,7 @@ def main():
                         joint_alpha=1.0,
                         joint_cmap='Reds',
                         joint_keypoints_3d=joint_keypoints,
-                        tactile_sensor_threshold=0.5
+                        tactile_sensor_threshold=0
                     )
 
                     final_img = np.concatenate([input_patch_np, regression_img, tactile_img, side_img], axis=1)

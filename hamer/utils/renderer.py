@@ -415,22 +415,23 @@ class Renderer:
         return sphere_meshes
 
     def _build_joint_spheres_from_skeleton(self, vertices, is_right, side_view, rot_angle,
-                                tactile_values, joint_keypoints_3d, tactile_vertex_groups,
-                                sphere_radius, joint_cmap, joint_alpha,
-                                camera_translation,
-                                tactile_sensor_threshold):
+                                    tactile_values, joint_keypoints_3d, tactile_vertex_groups,
+                                    sphere_radius, joint_cmap, joint_alpha,
+                                    camera_translation,
+                                    tactile_sensor_threshold):
         """
         skeleton에서 추출한 21개 joint 좌표를 사용하여 구를 생성하고,
-        tactile sensor 값이 24개인 경우, 나머지 3개는 tactile_vertex_groups에서 Palm7, Palm8, Palm9의 평균 위치로 표시.
+        tactile sensor 값이 24개인 경우, 나머지 3개는 joint_keypoints_3d를 이용해 palm 영역에서 추정한 위치로 표시.
         """
         import matplotlib.colors as mcolors
         import matplotlib.pyplot as plt
+        import numpy as np
 
         sphere_meshes = []
         norm = mcolors.Normalize(vmin=0, vmax=1)
         cmap_func = plt.get_cmap(joint_cmap)
 
-        # joint_keypoints_3d에도 mesh와 동일한 변환 적용
+        # joint_keypoints_3d에도 메쉬와 동일한 변환 적용
         transformed_joints = joint_keypoints_3d.copy()
         if side_view:
             rot_sv = trimesh.transformations.rotation_matrix(np.radians(rot_angle), [0, 1, 0])
@@ -438,7 +439,7 @@ class Renderer:
         rot180 = trimesh.transformations.rotation_matrix(np.radians(180), [1, 0, 0])
         transformed_joints = trimesh.transformations.transform_points(transformed_joints, rot180)
 
-        # 첫 21개: skeleton joint 좌표
+        # 첫 21개 센서: skeleton joint 좌표로 구 생성
         for i in range(21):
             sensor_val = tactile_values[i]
             if sensor_val < tactile_sensor_threshold:
@@ -459,31 +460,60 @@ class Renderer:
             sphere_mesh = pyrender.Mesh.from_trimesh(sphere, material=material)
             sphere_meshes.append(sphere_mesh)
 
-        # 나머지 3개 sensor는 tactile_vertex_groups에서 Palm7, Palm8, Palm9 사용
-        extra_keys = ["Palm7", "Palm8", "Palm9"]
-        vtx = vertices.copy()
-        if side_view:
-            rot_sv = trimesh.transformations.rotation_matrix(np.radians(rot_angle), [0, 1, 0])
-            vtx = trimesh.transformations.transform_points(vtx, rot_sv)
-        rot180 = trimesh.transformations.rotation_matrix(np.radians(180), [1, 0, 0])
-        vtx = trimesh.transformations.transform_points(vtx, rot180)
-        for j, key in enumerate(extra_keys):
+        # extra 3개 센서: palm 영역의 정보를 활용하여 위치 추정
+        # palm 영역 대표 keypoint 인덱스 (예시: wrist, thumb_base, index_base, middle_base, ring_base, little_base)
+        palm_indices = [0, 1, 5, 9, 13, 17]
+        palm_center = transformed_joints[palm_indices].mean(axis=0)
+
+        # 손의 palm normal 및 little finger 쪽 방향 계산
+        wrist = transformed_joints[0]
+        index_base = transformed_joints[9]  # 대표 index finger base
+        little_base = transformed_joints[17]  # 대표 little finger base
+        # palm 평면의 법선: wrist에서 index와 little finger 방향으로의 외적
+        palm_normal = np.cross(index_base - wrist, little_base - wrist)
+        palm_normal = palm_normal / (np.linalg.norm(palm_normal) + 1e-6)
+        # little finger 쪽 방향: palm_center에서 little_base 방향
+        side_dir = little_base - palm_center
+        side_dir = side_dir / (np.linalg.norm(side_dir) + 1e-6)
+        # 만약 왼손이면, 좌우 방향을 반전하여 little finger 쪽이 맞게 보정
+        if not is_right:
+            side_dir = -side_dir
+
+        # 손 크기(손바닥 영역 keypoint들과의 거리)를 측정하여 offset 산출
+        hand_dists = [np.linalg.norm(transformed_joints[i] - palm_center) for i in palm_indices]
+        hand_scale = np.max(hand_dists)  # 또는 np.mean(hand_dists)
+        offset = hand_scale * 0.3
+        # offset 값을 손 크기의 비율로 결정 (예: 15%와 30% 정도)
+        # 기존 extra 센서 위치 두 개는 그대로 유지:
+        #   extra_positions[0]: A = transformed_joints[0] + side_dir * offset_high (Palm7 위치)
+        #   extra_positions[1]: palm_center (중앙)
+        A = transformed_joints[0] + side_dir * offset  if is_right else transformed_joints[0] - side_dir * offset
+        # little finger의 손바닥 joint: 여기서는 transformed_joints[17]로 가정 (Palm의 little finger 쪽)
+        B = transformed_joints[17]
+        # palm_center를 P라 할 때, P의 A-B 선 위 직교 투영을 계산
+        P = palm_center
+        t = np.dot(P - A, B - A) / np.dot(B - A, B - A)
+        t = np.clip(t, 0, 1)  # 선분 내에 있도록 클램핑 (필요에 따라)
+        extra_pos_projection = A + t * (B - A)
+
+        extra_positions = [
+            A,                   # 그대로: Palm7
+            palm_center,         # 그대로: 중앙
+            extra_pos_projection # 새로 계산된 위치 (palm_center의 투영)
+        ]
+
+        for j, extra_pos in enumerate(extra_positions):
             sensor_index = 21 + j
             sensor_val = tactile_values[sensor_index]
             if sensor_val < tactile_sensor_threshold:
                 continue
-            indices = tactile_vertex_groups.get(key, [])
-            if len(indices) == 0:
-                continue
-            group_vtx = vtx[indices]
-            center_pos = group_vtx.mean(axis=0)
             ref_distance = np.linalg.norm(camera_translation) + 1e-6
-            distance = np.linalg.norm(center_pos - camera_translation) + 1e-6
+            distance = np.linalg.norm(extra_pos - camera_translation) + 1e-6
             scaled_radius = sphere_radius * (ref_distance / (distance)**1.7)
             rgba = cmap_func(norm(sensor_val))
             color = (*rgba[:3], joint_alpha)
             sphere = trimesh.creation.icosphere(subdivisions=2, radius=scaled_radius)
-            sphere.apply_translation(center_pos)
+            sphere.apply_translation(extra_pos)
             material = pyrender.MetallicRoughnessMaterial(
                 metallicFactor=0.0,
                 alphaMode='BLEND',
@@ -491,7 +521,9 @@ class Renderer:
             )
             sphere_mesh = pyrender.Mesh.from_trimesh(sphere, material=material)
             sphere_meshes.append(sphere_mesh)
+
         return sphere_meshes
+
 
 
     def _build_skin_points(self, vertices, is_right, side_view, rot_angle,
@@ -724,22 +756,19 @@ class Renderer:
 
                 # skeleton joint overlay: joint_keypoints_3d_list가 제공되면 사용, 아니면 tactile_vertex_groups 기반 사용
                 if (joint_keypoints_3d_list is not None) and (joint_keypoints_3d_list[i] is not None):
-                    # skeleton joint 좌표를 복사
+                    # skeleton joint 좌표에 flip, translation, 회전 적용 (이미 위에서 vtx에 대해 처리한 rot, rot180과 동일)
                     joint_keypoints = joint_keypoints_3d_list[i].copy()
-                    # 왼손인 경우 x축 flip 적용
                     if sss == 0:
                         joint_keypoints[:, 0] = -joint_keypoints[:, 0]
-                    # 손 메쉬와 동일하게 카메라 translation 추가
                     joint_keypoints = joint_keypoints + ttt.copy()
-                    # rot_angle 및 180도 회전 적용 (메쉬와 동일한 변환)
                     joint_keypoints = trimesh.transformations.transform_points(joint_keypoints, rot)
-                    joint_keypoints = trimesh.transformations.transform_points(joint_keypoints, rot180)
+                    transformed_joints = trimesh.transformations.transform_points(joint_keypoints, rot180)
 
-                    # 첫 21개: skeleton joint 좌표 사용하여 구 생성
+                    # 첫 21개: skeleton joint 좌표로 구 생성
                     for j in range(21):
                         if sensor_vals[j] < tactile_sensor_threshold:
                             continue
-                        joint_pos = joint_keypoints[j]
+                        joint_pos = transformed_joints[j]
                         distance = np.linalg.norm(joint_pos) + 1e-6
                         scaled_radius = joint_sphere_radius * (ref_distance / (distance)**1.7)
                         rgba = cmap_func(norm(sensor_vals[j]))
@@ -753,23 +782,57 @@ class Renderer:
                         )
                         mesh_sphere = pyrender.Mesh.from_trimesh(sphere, material=mat)
                         scene_overlay.add(mesh_sphere)
-                    # extra 3 sensor 값은 기존 방식(vtx 기반)으로 처리
-                    extra_keys = ["Palm7", "Palm8", "Palm9"]
-                    for j, key in enumerate(extra_keys):
-                        sensor_index = 21 + j
+                    
+                    # extra 3개 센서: palm 영역의 정보를 활용하여 위치 추정
+                    # palm 영역 대표 keypoint 인덱스 (예시: wrist, thumb_base, index_base, middle_base, ring_base, little_base)
+                    palm_indices = [0, 1, 5, 9, 13, 17]
+                    palm_center = transformed_joints[palm_indices].mean(axis=0)
+
+                    # 손의 palm normal 및 little finger 쪽 방향 계산
+                    wrist = transformed_joints[0]
+                    index_base = transformed_joints[9]  # 대표 index finger base
+                    little_base = transformed_joints[17]  # 대표 little finger base
+                    # palm 평면의 법선: wrist에서 index와 little finger 방향으로의 외적
+                    palm_normal = np.cross(index_base - wrist, little_base - wrist)
+                    palm_normal = palm_normal / (np.linalg.norm(palm_normal) + 1e-6)
+                    # little finger 쪽 방향: palm_center에서 little_base 방향
+                    side_dir = little_base - palm_center
+                    side_dir = side_dir / (np.linalg.norm(side_dir) + 1e-6)
+                    # 만약 왼손이면, 좌우 방향을 반전하여 little finger 쪽이 맞게 보정
+                    if sss == 0:
+                        side_dir = -side_dir
+
+                    # 손 크기(손바닥 영역 keypoint들과의 거리)를 측정하여 offset 산출
+                    hand_dists = [np.linalg.norm(transformed_joints[i] - palm_center) for i in palm_indices]
+                    hand_scale = np.max(hand_dists)  # 또는 np.mean(hand_dists)
+                    offset = hand_scale * 0.3
+                    # offset 값을 손 크기의 비율로 결정 (예: 15%와 30% 정도)
+                    # 기존 extra 센서 위치 두 개는 그대로 유지:
+                    #   extra_positions[0]: A = transformed_joints[0] + side_dir * offset_high (Palm7 위치)
+                    #   extra_positions[1]: palm_center (중앙)
+                    A = transformed_joints[0] + side_dir * offset  if is_right else transformed_joints[0] - side_dir * offset
+                    # little finger의 손바닥 joint: 여기서는 transformed_joints[17]로 가정 (Palm의 little finger 쪽)
+                    B = transformed_joints[17]
+                    # palm_center를 P라 할 때, P의 A-B 선 위 직교 투영을 계산
+                    P = palm_center
+                    t = np.dot(P - A, B - A) / np.dot(B - A, B - A)
+                    t = np.clip(t, 0, 1)  # 선분 내에 있도록 클램핑 (필요에 따라)
+                    extra_pos_projection = A + t * (B - A)
+
+                    extra_positions = [
+                        A,                   # 그대로: Palm7
+                        palm_center,         # 그대로: 중앙
+                        extra_pos_projection # 새로 계산된 위치 (palm_center의 투영)
+                    ]
+                    for sensor_index, extra_pos in zip(range(21, 24), extra_positions):
                         if sensor_vals[sensor_index] < tactile_sensor_threshold:
                             continue
-                        indices = tactile_vertex_groups.get(key, [])
-                        if len(indices) == 0:
-                            continue
-                        group_vtx = vtx[indices]
-                        center_pos = group_vtx.mean(axis=0)
-                        distance = np.linalg.norm(center_pos) + 1e-6
+                        distance = np.linalg.norm(extra_pos) + 1e-6
                         scaled_radius = joint_sphere_radius * (ref_distance / (distance)**1.7)
                         rgba = cmap_func(norm(sensor_vals[sensor_index]))
                         color = (*rgba[:3], joint_alpha)
                         sphere = trimesh.creation.icosphere(subdivisions=2, radius=scaled_radius)
-                        sphere.apply_translation(center_pos)
+                        sphere.apply_translation(extra_pos)
                         mat = pyrender.MetallicRoughnessMaterial(
                             metallicFactor=0.0,
                             alphaMode='BLEND',
@@ -777,6 +840,7 @@ class Renderer:
                         )
                         mesh_sphere = pyrender.Mesh.from_trimesh(sphere, material=mat)
                         scene_overlay.add(mesh_sphere)
+
                 else:
                     # tactile_vertex_groups 기반 joint overlay (기존 방식)
                     for group_idx, (group_name, indices) in enumerate(tactile_vertex_groups.items()):
