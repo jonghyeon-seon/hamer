@@ -400,7 +400,7 @@ class Renderer:
             # 카메라와 joint 간 거리 계산
             distance = np.linalg.norm(joint_pos - camera_translation) + 1e-6
             # 원근법에 따른 스케일: 기준 거리일 때는 sphere_radius, 멀어지면 작게, 가까우면 크게
-            scaled_radius = sphere_radius * (ref_distance / (distance)**1.7)
+            scaled_radius = sphere_radius * (ref_distance / (distance)**2.1)
             rgba = cmap_func(norm(sensor_val))
             color = (*rgba[:3], joint_alpha)
             sphere = trimesh.creation.icosphere(subdivisions=2, radius=scaled_radius)
@@ -447,7 +447,7 @@ class Renderer:
             joint_pos = transformed_joints[i]
             ref_distance = np.linalg.norm(camera_translation) + 1e-6
             distance = np.linalg.norm(joint_pos - camera_translation) + 1e-6
-            scaled_radius = sphere_radius * (ref_distance / (distance)**1.7)
+            scaled_radius = sphere_radius * (ref_distance / (distance)**2.1)
             rgba = cmap_func(norm(sensor_val))
             color = (*rgba[:3], joint_alpha)
             sphere = trimesh.creation.icosphere(subdivisions=2, radius=scaled_radius)
@@ -509,7 +509,7 @@ class Renderer:
                 continue
             ref_distance = np.linalg.norm(camera_translation) + 1e-6
             distance = np.linalg.norm(extra_pos - camera_translation) + 1e-6
-            scaled_radius = sphere_radius * (ref_distance / (distance)**1.7)
+            scaled_radius = sphere_radius * (ref_distance / (distance)**2.1)
             rgba = cmap_func(norm(sensor_val))
             color = (*rgba[:3], joint_alpha)
             sphere = trimesh.creation.icosphere(subdivisions=2, radius=scaled_radius)
@@ -770,7 +770,7 @@ class Renderer:
                             continue
                         joint_pos = transformed_joints[j]
                         distance = np.linalg.norm(joint_pos) + 1e-6
-                        scaled_radius = joint_sphere_radius * (ref_distance / (distance)**1.7)
+                        scaled_radius = joint_sphere_radius * (ref_distance / (distance)**2.1)
                         rgba = cmap_func(norm(sensor_vals[j]))
                         color = (*rgba[:3], joint_alpha)
                         sphere = trimesh.creation.icosphere(subdivisions=2, radius=scaled_radius)
@@ -828,7 +828,7 @@ class Renderer:
                         if sensor_vals[sensor_index] < tactile_sensor_threshold:
                             continue
                         distance = np.linalg.norm(extra_pos) + 1e-6
-                        scaled_radius = joint_sphere_radius * (ref_distance / (distance)**1.7)
+                        scaled_radius = joint_sphere_radius * (ref_distance / (distance)**2.1)
                         rgba = cmap_func(norm(sensor_vals[sensor_index]))
                         color = (*rgba[:3], joint_alpha)
                         sphere = trimesh.creation.icosphere(subdivisions=2, radius=scaled_radius)
@@ -851,7 +851,7 @@ class Renderer:
                         group_vtx = vtx[indices]
                         center_pos = group_vtx.mean(axis=0)
                         distance = np.linalg.norm(center_pos) + 1e-6
-                        scaled_radius = joint_sphere_radius * (ref_distance / (distance)**1.7)
+                        scaled_radius = joint_sphere_radius * (ref_distance / (distance)**2.1)
                         sphere = trimesh.creation.icosphere(subdivisions=2, radius=scaled_radius)
                         sphere.apply_translation(center_pos)
                         mat = pyrender.MetallicRoughnessMaterial(
@@ -886,7 +886,7 @@ class Renderer:
                     group_vtx = vtx[indices]
                     center_pos = group_vtx.mean(axis=0)
                     distance = np.linalg.norm(center_pos) + 1e-6
-                    scaled_radius = joint_sphere_radius * (ref_distance / (distance)**1.7)
+                    scaled_radius = joint_sphere_radius * (ref_distance / (distance)**2.1)
                     sphere = trimesh.creation.icosphere(subdivisions=2, radius=scaled_radius)                    # 고정된 반지름 사용
                     sphere.apply_translation(center_pos)
                     mat = pyrender.MetallicRoughnessMaterial(
