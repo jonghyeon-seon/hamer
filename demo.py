@@ -191,6 +191,11 @@ def main():
 
                 # 단일 렌더링용 sensor overlay (데모용 랜덤 값)
                 tactile_values = np.random.rand(24).tolist()
+                tactile_values = np.zeros(24)
+                # tactile_values[13] = 10
+                # tactile_values[14] = 10
+                # tactile_values[15] = 10
+                tactile_values[23] = 10
                 is_right_flag = batch['right'][n].cpu().numpy()
                 # 만약 overlay_type이 'joint'라면, skeleton joint keypoints를 전달 (21개)
                 joint_keypoints = None

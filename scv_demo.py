@@ -42,8 +42,8 @@ tactile_vertex_groups = {
     "Palm9": [1, 2, 4, 7, 9, 113, 115, 240]
 }
 
-# 기존 process_video 함수(수정한 tactile_norm 버전 포함)
-def process_video(video_path, output_video_path, hand_type, tactile_list,
+# 수정된 process_video 함수:
+def process_video(video_path, output_video_path, tactile_left_list, tactile_right_list,
                   model, model_cfg, detector, cpm, renderer, args, device):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -54,7 +54,7 @@ def process_video(video_path, output_video_path, hand_type, tactile_list,
     width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    
+
     if args.tactile_norm:
         writer = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
     else:
@@ -94,24 +94,24 @@ def process_video(video_path, output_video_path, hand_type, tactile_list,
 
         bboxes = []
         is_right_list = []
-        if hand_type == 'left':
-            for vitposes in vitposes_out:
-                left_hand_keyp = vitposes['keypoints'][-42:-21]
-                valid = left_hand_keyp[:, 2] > 0.5
-                if valid.sum() > 3:
-                    bbox = [left_hand_keyp[valid, 0].min(), left_hand_keyp[valid, 1].min(),
-                            left_hand_keyp[valid, 0].max(), left_hand_keyp[valid, 1].max()]
-                    bboxes.append(bbox)
-                    is_right_list.append(0)
-        elif hand_type == 'right':
-            for vitposes in vitposes_out:
-                right_hand_keyp = vitposes['keypoints'][-21:]
-                valid = right_hand_keyp[:, 2] > 0.5
-                if valid.sum() > 3:
-                    bbox = [right_hand_keyp[valid, 0].min(), right_hand_keyp[valid, 1].min(),
-                            right_hand_keyp[valid, 0].max(), right_hand_keyp[valid, 1].max()]
-                    bboxes.append(bbox)
-                    is_right_list.append(1)
+        # 양손 모두에 대해 검출 수행
+        for vitposes in vitposes_out:
+            left_hand_keyp = vitposes['keypoints'][-42:-21]
+            right_hand_keyp = vitposes['keypoints'][-21:]
+            # 왼손 검출
+            valid_left = (left_hand_keyp[:, 2] > 0.5)
+            if valid_left.sum() > 3:
+                bbox_left = [left_hand_keyp[valid_left, 0].min(), left_hand_keyp[valid_left, 1].min(),
+                             left_hand_keyp[valid_left, 0].max(), left_hand_keyp[valid_left, 1].max()]
+                bboxes.append(bbox_left)
+                is_right_list.append(0)
+            # 오른손 검출
+            valid_right = (right_hand_keyp[:, 2] > 0.5)
+            if valid_right.sum() > 3:
+                bbox_right = [right_hand_keyp[valid_right, 0].min(), right_hand_keyp[valid_right, 1].min(),
+                              right_hand_keyp[valid_right, 0].max(), right_hand_keyp[valid_right, 1].max()]
+                bboxes.append(bbox_right)
+                is_right_list.append(1)
 
         if len(bboxes) == 0:
             if args.tactile_norm:
@@ -124,19 +124,25 @@ def process_video(video_path, output_video_path, hand_type, tactile_list,
             continue
 
         boxes = np.stack(bboxes)
-        right_arr = np.stack(is_right_list)
+        right_arr = np.array(is_right_list)
 
-        if frame_idx < len(tactile_list):
-            tactile_reading = tactile_list[frame_idx]
+        # 각 프레임마다 왼손, 오른손 tactile 데이터를 가져옵니다.
+        if frame_idx < len(tactile_left_list):
+            tactile_left_reading = tactile_left_list[frame_idx]
         else:
-            tactile_reading = tactile_list[-1]
-        tactile_array = np.array(tactile_reading, dtype=np.float32)  # shape: [24, 4, 3]
+            tactile_left_reading = tactile_left_list[-1]
+        if frame_idx < len(tactile_right_list):
+            tactile_right_reading = tactile_right_list[frame_idx]
+        else:
+            tactile_right_reading = tactile_right_list[-1]
+
+        # tactile 값은 각 검출(손)별로 할당합니다.
         if args.tactile_norm:
-            tactile_values = tactile_array.mean(axis=(1,2)).tolist()
+            all_tactile_values = []
         else:
-            tactile_values_x = tactile_array[:, :, 0].mean(axis=1).tolist()
-            tactile_values_y = tactile_array[:, :, 1].mean(axis=1).tolist()
-            tactile_values_z = tactile_array[:, :, 2].mean(axis=1).tolist()
+            all_tactile_values_x = []
+            all_tactile_values_y = []
+            all_tactile_values_z = []
 
         dataset = ViTDetDataset(model_cfg, img_cv2, boxes, right_arr, rescale_factor=args.rescale_factor)
         dataloader = torch.utils.data.DataLoader(dataset, batch_size=len(bboxes), shuffle=False, num_workers=0)
@@ -144,13 +150,19 @@ def process_video(video_path, output_video_path, hand_type, tactile_list,
         all_verts = []
         all_cam_t = []
         all_right = []
-        if args.tactile_norm:
-            all_tactile_values = []
-        else:
-            all_tactile_values_x = []
-            all_tactile_values_y = []
-            all_tactile_values_z = []
         all_joint_keypoints = []
+
+        # 미리 tactile 데이터의 평균값 계산 (정규화 여부에 따라)
+        if args.tactile_norm:
+            tactile_left_values = tactile_left_reading.mean(axis=(1,2)).tolist()
+            tactile_right_values = tactile_right_reading.mean(axis=(1,2)).tolist()
+        else:
+            tactile_left_values_x = tactile_left_reading[:, :, 0].mean(axis=1).tolist()
+            tactile_left_values_y = tactile_left_reading[:, :, 1].mean(axis=1).tolist()
+            tactile_left_values_z = tactile_left_reading[:, :, 2].mean(axis=1).tolist()
+            tactile_right_values_x = tactile_right_reading[:, :, 0].mean(axis=1).tolist()
+            tactile_right_values_y = tactile_right_reading[:, :, 1].mean(axis=1).tolist()
+            tactile_right_values_z = tactile_right_reading[:, :, 2].mean(axis=1).tolist()
 
         for batch in dataloader:
             batch = recursive_to(batch, device)
@@ -176,11 +188,20 @@ def process_video(video_path, output_video_path, hand_type, tactile_list,
                 all_cam_t.append(cam_t)
                 all_right.append(is_right_flag)
                 if args.tactile_norm:
-                    all_tactile_values.append(tactile_values)
+                    # 손 타입에 따라 해당 tactile 값을 할당합니다.
+                    if is_right_flag:
+                        all_tactile_values.append(tactile_right_values)
+                    else:
+                        all_tactile_values.append(tactile_left_values)
                 else:
-                    all_tactile_values_x.append(tactile_values_x)
-                    all_tactile_values_y.append(tactile_values_y)
-                    all_tactile_values_z.append(tactile_values_z)
+                    if is_right_flag:
+                        all_tactile_values_x.append(tactile_right_values_x)
+                        all_tactile_values_y.append(tactile_right_values_y)
+                        all_tactile_values_z.append(tactile_right_values_z)
+                    else:
+                        all_tactile_values_x.append(tactile_left_values_x)
+                        all_tactile_values_y.append(tactile_left_values_y)
+                        all_tactile_values_z.append(tactile_left_values_z)
                 all_joint_keypoints.append(joint_keypoints)
 
         if args.full_frame and len(all_verts) > 0:
@@ -199,7 +220,7 @@ def process_video(video_path, output_video_path, hand_type, tactile_list,
                 joint_keypoints_3d_list=all_joint_keypoints,
                 tactile_sensor_threshold=0
             )
-            render_res = max(width, height)
+            render_res = (width, height)
             input_img = img_cv2.astype(np.float32)[:, :, ::-1] / 255.0  # BGR -> RGB
             input_img = np.concatenate([input_img, np.ones_like(input_img[:, :, :1])], axis=2)
             if args.tactile_norm:
@@ -260,11 +281,9 @@ def process_video(video_path, output_video_path, hand_type, tactile_list,
     print(f"처리 완료: {video_path} -> {output_video_path} (tactile_norm={args.tactile_norm})")
 
 
-# 에피소드 단위로 처리하는 함수 (각 프로세스에서 실행)
+# 에피소드 단위 처리 함수 수정 (left_video.mp4만 사용)
 def process_episode(episode_dir_path, args_dict):
-    # 각 프로세스 내에서 모델 및 관련 객체를 초기화합니다.
     args = argparse.Namespace(**args_dict)
-    # 모델 다운로드 및 로드
     download_models(CACHE_DIR_HAMER)
     model, model_cfg = load_hamer(args.checkpoint)
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -290,43 +309,116 @@ def process_episode(episode_dir_path, args_dict):
         detectron2_cfg.model.roi_heads.box_predictor.test_nms_thresh   = 0.4
         detector = DefaultPredictor_Lazy(detectron2_cfg)
 
-    # keypoint detector
     cpm = ViTPoseModel(device)
-    # 렌더러 초기화
     renderer = Renderer(model_cfg, faces=model.mano.faces)
 
-    # 에피소드 폴더 내 파일 경로 구성
     episode_dir = Path(episode_dir_path)
     left_video_path = episode_dir / 'left_video.mp4'
-    right_video_path = episode_dir / 'right_video.mp4'
     tactile_json_path = episode_dir / 'tactile.json'
 
-    if not (left_video_path.exists() and right_video_path.exists() and tactile_json_path.exists()):
+    if not (left_video_path.exists() and tactile_json_path.exists()):
         print(f"{episode_dir.name}에 필수 파일이 없습니다. 건너뜁니다.")
         return
 
-    # 출력 에피소드 폴더 생성
     output_episode_dir = Path(args.output_dir) / episode_dir.name
     os.makedirs(output_episode_dir, exist_ok=True)
 
-    # tactile.json 로드
+    # tactile.json 로드 및 왼손/오른손 tactile 데이터 분리
     with open(tactile_json_path, 'r') as f:
         tactile_data_all = json.load(f)
-    tactile_left_list = [entry['left'] for entry in tactile_data_all]
-    tactile_right_list = [entry['right'] for entry in tactile_data_all]
+        tactile_left_list, tactile_right_list = convert_tactile_to_list(tactile_data_all)
 
-    # 왼손 영상 처리
-    output_left_video = output_episode_dir / 'left_video.mp4'
-    process_video(str(left_video_path), str(output_left_video), 'left', tactile_left_list,
-                  model, model_cfg, detector, cpm, renderer, args, device)
-    # 오른손 영상 처리
-    output_right_video = output_episode_dir / 'right_video.mp4'
-    process_video(str(right_video_path), str(output_right_video), 'right', tactile_right_list,
+    output_video = output_episode_dir / 'left_video.mp4'
+    process_video(str(left_video_path), str(output_video), tactile_left_list, tactile_right_list,
                   model, model_cfg, detector, cpm, renderer, args, device)
 
-    # tactile.json 복사
     shutil.copy(str(tactile_json_path), str(output_episode_dir / 'tactile.json'))
     print(f"에피소드 {episode_dir.name} 처리 완료.")
+
+
+def convert_tactile_to_list(tactile_data):    #converting sequence of sensor's id to sequence of tactile values
+    CONVERT_ID_GLOVE_TO_RENDER ={
+        0: 4,
+        1: 3,
+        2: 2,
+        3: 1,
+        4: 8,
+        5: 7,
+        6: 6,
+        7: 5,
+        8: 12,
+        9: 11,
+        10: 10,
+        11: 9,
+        12: 16,
+        13: 15,
+        14: 14,
+        15: 13,
+        16: 20,
+        17: 19,
+        18: 18,
+        19: 17,
+        20: 22,
+        21: 0,
+        22: 21,
+        23: 23,
+    }
+    right_sensor_ids = ['128', '129', '130', '131', '132', '133']
+    left_sensor_ids  = ['134', '135', '136', '137', '138', '139']
+    
+    init_tactile_data = {}
+    for entry in tactile_data:
+        entry = entry['tactile']
+        for right_id in right_sensor_ids:
+            if (right_id in entry) and (right_id not in init_tactile_data):
+                init_tactile_data[right_id] = entry[right_id]
+        for left_id in left_sensor_ids:
+            if (left_id in entry) and (left_id not in init_tactile_data):
+                init_tactile_data[left_id] = entry[left_id]
+        if len(init_tactile_data) == len(right_sensor_ids) + len(left_sensor_ids):
+            break
+
+    if len(init_tactile_data) != len(right_sensor_ids) + len(left_sensor_ids):
+        raise ValueError("init tactile data not found")
+
+    for entry in tactile_data:
+        entry = entry['tactile']
+        for right_id in right_sensor_ids:
+            if right_id not in entry:
+                entry[right_id] = init_tactile_data[right_id]
+        for left_id in left_sensor_ids:
+            if left_id not in entry:
+                entry[left_id] = init_tactile_data[left_id]
+                
+    tactile_left_list, tactile_right_list = [], []
+    for entry in tactile_data:
+        entry = entry['tactile']
+        left_arrays = []
+        right_arrays = []
+        for left_id in left_sensor_ids:
+            sensor_value = np.array(entry[left_id]['data']).reshape(4, 4, 3)
+            init_value = np.array(init_tactile_data[left_id]['data']).reshape(4, 4, 3)
+            # sensor_value = sensor_value - init_value
+            left_arrays.append(sensor_value)
+        for right_id in right_sensor_ids:
+            sensor_value = np.array(entry[right_id]['data']).reshape(4, 4, 3)
+            # sensor_value = sensor_value - init_value
+            right_arrays.append(sensor_value)
+
+        left_arr = np.stack(left_arrays, axis=0).reshape(24, 4, 3)
+        right_arr = np.stack(right_arrays, axis=0).reshape(24, 4, 3)
+        
+        ordered_indices = [k for k, v in sorted(CONVERT_ID_GLOVE_TO_RENDER.items(), key=lambda item: item[1])]
+        left_arr = left_arr[ordered_indices]
+        right_arr = right_arr[ordered_indices]
+        
+        tactile_left_list.append(left_arr)
+        tactile_right_list.append(right_arr)
+        
+
+
+    return tactile_left_list, tactile_right_list
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -354,28 +446,23 @@ def main():
                         help='Overlay 방식 선택 (joint: skeleton joint 기반 등)')
     parser.add_argument('--with_bg', dest='with_bg', action='store_true', default=False,
                         help='배경 렌더링 활성화')
-    parser.add_argument('--tactile_threshold', type=float, default=0.0,
+    parser.add_argument('--tactile_threshold', type=float, default=5.0,
                         help='tactile 값 임계치 설정')
     parser.add_argument('--tactile_norm', dest='tactile_norm', action='store_true', default=True,
                         help='tactile 값 정규화 활성화 (False면 각 축별로 따로 저장)')
-    parser.add_argument('--num_workers', type=int, default=4,
+    parser.add_argument('--num_workers', type=int, default=1,
                         help='에피소드 병렬 처리시 사용할 프로세스 수')
     args = parser.parse_args()
 
     raw_dataset_path = Path(args.raw_dataset)
     episode_dirs = [str(ep) for ep in sorted(raw_dataset_path.iterdir()) if ep.is_dir()]
 
-    # args 객체는 pickle이 어려울 수 있으므로 dict로 전달합니다.
     args_dict = vars(args)
 
-    import concurrent.futures
-    with concurrent.futures.ProcessPoolExecutor(max_workers=args.num_workers) as executor:
-        futures = [executor.submit(process_episode, ep, args_dict) for ep in episode_dirs]
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                print(f"에피소드 처리 중 에러 발생: {e}")
+    # 기존의 병렬 처리 대신 순차적으로 처리
+    for ep in episode_dirs:
+        process_episode(ep, args_dict)
+
 
 if __name__ == '__main__':
     main()

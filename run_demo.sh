@@ -1,0 +1,1 @@
+python demo.py --img_folder ./example_data --out_folder ./out_demo --side_view --full_frame --save_mesh --batch_size 1  

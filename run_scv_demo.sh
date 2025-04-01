@@ -1,0 +1,1 @@
+python scv_demo.py --with_bg --tactile_norm --raw_dataset='holiworld' --output_dir='holiworld_out'
