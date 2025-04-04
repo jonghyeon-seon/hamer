@@ -190,7 +190,7 @@ class Renderer:
                  is_right: int = 1,
                  # overlay 관련: 'joint', 'skin_point', 'skin_mesh'
                  overlay_type: str = 'skin_mesh',
-                 joint_sphere_radius: float = 5.0,
+                 joint_sphere_radius: float = 15.0,
                  joint_alpha: float = 1.0,
                  joint_cmap: str = 'Reds',
                  # 센서값 threshold (0~1)
@@ -327,7 +327,7 @@ class Renderer:
         import matplotlib.pyplot as plt
 
         meshes = []
-        norm = mcolors.Normalize(vmin=0, vmax=1)
+        norm = mcolors.Normalize(vmin=0, vmax=16)
         cmap_func = plt.get_cmap(tactile_cmap)
 
         vtx = vertices.copy()
@@ -375,7 +375,7 @@ class Renderer:
         import matplotlib.pyplot as plt
 
         sphere_meshes = []
-        norm = mcolors.Normalize(vmin=0, vmax=1)
+        norm = mcolors.Normalize(vmin=0, vmax=16)
         cmap_func = plt.get_cmap(joint_cmap)
 
         vtx = vertices.copy()
@@ -428,7 +428,7 @@ class Renderer:
         import numpy as np
 
         sphere_meshes = []
-        norm = mcolors.Normalize(vmin=0, vmax=1)
+        norm = mcolors.Normalize(vmin=0, vmax=16)
         cmap_func = plt.get_cmap(joint_cmap)
 
         # joint_keypoints_3d에도 메쉬와 동일한 변환 적용
@@ -536,7 +536,7 @@ class Renderer:
         import matplotlib.colors as mcolors
         import matplotlib.pyplot as plt
         point_meshes = []
-        norm = mcolors.Normalize(vmin=0, vmax=1)
+        norm = mcolors.Normalize(vmin=0, vmax=16)
         cmap_func = plt.get_cmap(joint_cmap)
 
         vtx = vertices.copy()
@@ -737,7 +737,7 @@ class Renderer:
             scene_overlay.add_node(node)
 
         if overlay_type == 'joint':
-            norm = mcolors.Normalize(vmin=0, vmax=1)
+            norm = mcolors.Normalize(vmin=0, vmax=16)
             cmap_func = plt.get_cmap(joint_cmap)
 
             for i, (vvv, ttt, sss) in enumerate(zip(vertices, cam_t, is_right)):
@@ -777,7 +777,7 @@ class Renderer:
                         sphere.apply_translation(joint_pos)
                         mat = pyrender.MetallicRoughnessMaterial(
                             metallicFactor=0.0,
-                            alphaMode='BLEND',
+                            alphaMode='OPAQUE',
                             baseColorFactor=color,
                         )
                         mesh_sphere = pyrender.Mesh.from_trimesh(sphere, material=mat)
@@ -863,7 +863,7 @@ class Renderer:
                         scene_overlay.add(mesh_sphere)
 
         elif overlay_type == 'skin_point':
-            norm = mcolors.Normalize(vmin=0, vmax=1)
+            norm = mcolors.Normalize(vmin=0, vmax=16)
             cmap_func = plt.get_cmap(joint_cmap)
             for i, (vvv, ttt, sss) in enumerate(zip(vertices, cam_t, is_right)):
                 sensor_vals = tactile_values_list[i]
@@ -897,7 +897,7 @@ class Renderer:
                     mesh_sphere = pyrender.Mesh.from_trimesh(sphere, material=mat)
                     scene_overlay.add(mesh_sphere)
         else:  # skin_mesh
-            norm = mcolors.Normalize(vmin=0, vmax=1)
+            norm = mcolors.Normalize(vmin=0, vmax=16)
             cmap_func = plt.get_cmap(tactile_cmap)
             for i, (vvv, ttt, sss) in enumerate(zip(vertices, cam_t, is_right)):
                 sensor_vals = tactile_values_list[i]

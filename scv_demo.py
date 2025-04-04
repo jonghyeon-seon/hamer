@@ -51,8 +51,10 @@ def process_video(video_path, output_video_path, tactile_left_list, tactile_righ
         return
 
     fps = cap.get(cv2.CAP_PROP_FPS)
-    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+
+    width  = int(args.width)
+    height = int(args.height)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 
     if args.tactile_norm:
@@ -70,11 +72,15 @@ def process_video(video_path, output_video_path, tactile_left_list, tactile_righ
             break
 
         img_cv2 = frame.copy()
+        img_cv2 = cv2.resize(img_cv2, (width, height))
         det_out = detector(img_cv2)
         img_rgb = img_cv2[:, :, ::-1].copy()  # BGR -> RGB
         det_instances = det_out['instances']
         valid_idx = (det_instances.pred_classes == 0) & (det_instances.scores > 0.5)
         if valid_idx.sum() == 0:
+            if not args.with_bg :
+                frame = np.ones((height, width, 3), dtype=np.uint8) * 255
+                
             if args.tactile_norm:
                 writer.write(frame)
             else:
@@ -114,6 +120,9 @@ def process_video(video_path, output_video_path, tactile_left_list, tactile_righ
                 is_right_list.append(1)
 
         if len(bboxes) == 0:
+            if not args.with_bg:
+                frame = np.ones((height, width, 3), dtype=np.uint8) * 255
+                
             if args.tactile_norm:
                 writer.write(frame)
             else:
@@ -212,13 +221,13 @@ def process_video(video_path, output_video_path, tactile_left_list, tactile_righ
                 tactile_vertex_groups=tactile_vertex_groups,
                 tactile_opacity=1.0,
                 tactile_cmap='Reds',
-                mesh_alpha=0.3,
+                mesh_alpha=args.mesh_alpha,
                 overlay_type=args.overlay_type,
-                joint_sphere_radius=0.02,
+                joint_sphere_radius=0.1,
                 joint_alpha=1.0,
                 joint_cmap='Reds',
                 joint_keypoints_3d_list=all_joint_keypoints,
-                tactile_sensor_threshold=0
+                tactile_sensor_threshold=args.tactile_threshold
             )
             render_res = (width, height)
             input_img = img_cv2.astype(np.float32)[:, :, ::-1] / 255.0  # BGR -> RGB
@@ -262,6 +271,9 @@ def process_video(video_path, output_video_path, tactile_left_list, tactile_righ
                 writer_y.write(final_frame_y)
                 writer_z.write(final_frame_z)
         else:
+            if not args.with_bg:
+                frame = np.ones((height, width, 3), dtype=np.uint8) * 255
+                
             if args.tactile_norm:
                 writer.write(frame)
             else:
@@ -398,11 +410,11 @@ def convert_tactile_to_list(tactile_data):    #converting sequence of sensor's i
         for left_id in left_sensor_ids:
             sensor_value = np.array(entry[left_id]['data']).reshape(4, 4, 3)
             init_value = np.array(init_tactile_data[left_id]['data']).reshape(4, 4, 3)
-            # sensor_value = sensor_value - init_value
+            sensor_value = np.abs(sensor_value - init_value)
             left_arrays.append(sensor_value)
         for right_id in right_sensor_ids:
             sensor_value = np.array(entry[right_id]['data']).reshape(4, 4, 3)
-            # sensor_value = sensor_value - init_value
+            sensor_value = np.abs(sensor_value - init_value)
             right_arrays.append(sensor_value)
 
         left_arr = np.stack(left_arrays, axis=0).reshape(24, 4, 3)
@@ -446,12 +458,18 @@ def main():
                         help='Overlay 방식 선택 (joint: skeleton joint 기반 등)')
     parser.add_argument('--with_bg', dest='with_bg', action='store_true', default=False,
                         help='배경 렌더링 활성화')
-    parser.add_argument('--tactile_threshold', type=float, default=5.0,
+    parser.add_argument('--tactile_threshold', type=float, default=2.0,
                         help='tactile 값 임계치 설정')
     parser.add_argument('--tactile_norm', dest='tactile_norm', action='store_true', default=True,
                         help='tactile 값 정규화 활성화 (False면 각 축별로 따로 저장)')
     parser.add_argument('--num_workers', type=int, default=1,
                         help='에피소드 병렬 처리시 사용할 프로세스 수')
+    parser.add_argument('--width', type=int, default=1280,
+                        help='렌더링 영상 너비')
+    parser.add_argument('--height', type=int, default=720,
+                        help='렌더링 영상 높이')
+    parser.add_argument('--mesh_alpha', type=float, default=1.0,
+                        help='메쉬 투명도')
     args = parser.parse_args()
 
     raw_dataset_path = Path(args.raw_dataset)
