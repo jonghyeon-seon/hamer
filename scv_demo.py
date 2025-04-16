@@ -45,6 +45,7 @@ tactile_vertex_groups = {
 # 수정된 process_video 함수:
 def process_video(video_path, output_video_path, tactile_left_list, tactile_right_list,
                   model, model_cfg, detector, cpm, renderer, args, device):
+    
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"영상 {video_path}을 열 수 없습니다.")
@@ -79,7 +80,7 @@ def process_video(video_path, output_video_path, tactile_left_list, tactile_righ
         valid_idx = (det_instances.pred_classes == 0) & (det_instances.scores > 0.5)
         if valid_idx.sum() == 0:
             if not args.with_bg :
-                frame = np.ones((height, width, 3), dtype=np.uint8) * 255
+                frame = np.ones((height, width, 3), dtype=np.uint8) * 255 // 2
                 
             if args.tactile_norm:
                 writer.write(frame)
@@ -101,6 +102,7 @@ def process_video(video_path, output_video_path, tactile_left_list, tactile_righ
         bboxes = []
         is_right_list = []
         # 양손 모두에 대해 검출 수행
+        
         for vitposes in vitposes_out:
             left_hand_keyp = vitposes['keypoints'][-42:-21]
             right_hand_keyp = vitposes['keypoints'][-21:]
@@ -119,9 +121,10 @@ def process_video(video_path, output_video_path, tactile_left_list, tactile_righ
                 bboxes.append(bbox_right)
                 is_right_list.append(1)
 
+
         if len(bboxes) == 0:
             if not args.with_bg:
-                frame = np.ones((height, width, 3), dtype=np.uint8) * 255
+                frame = np.ones((height, width, 3), dtype=np.uint8) * 255 // 2
                 
             if args.tactile_norm:
                 writer.write(frame)
@@ -131,6 +134,9 @@ def process_video(video_path, output_video_path, tactile_left_list, tactile_righ
                 writer_z.write(frame)
             frame_idx += 1
             continue
+        
+        bboxes = bboxes[:1]
+        is_right_list = is_right_list[:1]
 
         boxes = np.stack(bboxes)
         right_arr = np.array(is_right_list)
@@ -196,6 +202,7 @@ def process_video(video_path, output_video_path, tactile_left_list, tactile_righ
                 all_verts.append(verts)
                 all_cam_t.append(cam_t)
                 all_right.append(is_right_flag)
+
                 if args.tactile_norm:
                     # 손 타입에 따라 해당 tactile 값을 할당합니다.
                     if is_right_flag:
@@ -216,7 +223,7 @@ def process_video(video_path, output_video_path, tactile_left_list, tactile_righ
         if args.full_frame and len(all_verts) > 0:
             misc_args_common = dict(
                 mesh_base_color=LIGHT_BLUE,
-                scene_bg_color=(1, 1, 1),
+                scene_bg_color=(0.5, 0.5, 0.5),
                 focal_length=scaled_focal_length,
                 tactile_vertex_groups=tactile_vertex_groups,
                 tactile_opacity=1.0,
@@ -272,7 +279,7 @@ def process_video(video_path, output_video_path, tactile_left_list, tactile_righ
                 writer_z.write(final_frame_z)
         else:
             if not args.with_bg:
-                frame = np.ones((height, width, 3), dtype=np.uint8) * 255
+                frame = np.ones((height, width, 3), dtype=np.uint8) * 255 // 2
                 
             if args.tactile_norm:
                 writer.write(frame)
@@ -294,51 +301,35 @@ def process_video(video_path, output_video_path, tactile_left_list, tactile_righ
 
 
 # 에피소드 단위 처리 함수 수정 (left_video.mp4만 사용)
-def process_episode(episode_dir_path, args_dict):
-    args = argparse.Namespace(**args_dict)
-    download_models(CACHE_DIR_HAMER)
-    model, model_cfg = load_hamer(args.checkpoint)
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    model = model.to(device)
-    model.eval()
-
-    # body detector 설정
-    from hamer.utils.utils_detectron2 import DefaultPredictor_Lazy
-    if args.body_detector == 'vitdet':
-        from detectron2.config import LazyConfig
-        import hamer
-        cfg_path = Path(hamer.__file__).parent / 'configs' / 'cascade_mask_rcnn_vitdet_h_75ep.py'
-        detectron2_cfg = LazyConfig.load(str(cfg_path))
-        detectron2_cfg.train.init_checkpoint = "https://dl.fbaipublicfiles.com/detectron2/ViTDet/COCO/cascade_mask_rcnn_vitdet_h/f328730692/model_final_f05665.pkl"
-        for i in range(3):
-            detectron2_cfg.model.roi_heads.box_predictors[i].test_score_thresh = 0.25
-        detector = DefaultPredictor_Lazy(detectron2_cfg)
-    elif args.body_detector == 'regnety':
-        from detectron2 import model_zoo
-        from detectron2.config import get_cfg
-        detectron2_cfg = model_zoo.get_config('new_baselines/mask_rcnn_regnety_4gf_dds_FPN_400ep_LSJ.py', trained=True)
-        detectron2_cfg.model.roi_heads.box_predictor.test_score_thresh = 0.5
-        detectron2_cfg.model.roi_heads.box_predictor.test_nms_thresh   = 0.4
-        detector = DefaultPredictor_Lazy(detectron2_cfg)
-
-    cpm = ViTPoseModel(device)
-    renderer = Renderer(model_cfg, faces=model.mano.faces)
-
+def process_episode(episode_dir_path, args, **extra_args):
     episode_dir = Path(episode_dir_path)
     left_video_path = episode_dir / 'left_video.mp4'
     tactile_json_path = episode_dir / 'tactile.json'
+    
+    model, model_cfg, detector, cpm, renderer, device = extra_args['model'], extra_args['model_cfg'], extra_args['detector'], extra_args['cpm'], extra_args['renderer'], extra_args['device']
 
     if not (left_video_path.exists() and tactile_json_path.exists()):
         print(f"{episode_dir.name}에 필수 파일이 없습니다. 건너뜁니다.")
         return
 
     output_episode_dir = Path(args.output_dir) / episode_dir.name
+    if output_episode_dir.exists():
+        is_json_exist = False
+        for file in output_episode_dir.iterdir():
+            if file.name == 'tactile.json':
+                is_json_exist = True
+                break
+        if is_json_exist:
+            print(f"{episode_dir.name} already processed.")
+            return True
     os.makedirs(output_episode_dir, exist_ok=True)
 
     # tactile.json 로드 및 왼손/오른손 tactile 데이터 분리
     with open(tactile_json_path, 'r') as f:
         tactile_data_all = json.load(f)
         tactile_left_list, tactile_right_list = convert_tactile_to_list(tactile_data_all)
+        if len(tactile_left_list) == 0:
+            return False
 
     output_video = output_episode_dir / 'left_video.mp4'
     process_video(str(left_video_path), str(output_video), tactile_left_list, tactile_right_list,
@@ -346,10 +337,10 @@ def process_episode(episode_dir_path, args_dict):
 
     shutil.copy(str(tactile_json_path), str(output_episode_dir / 'tactile.json'))
     print(f"에피소드 {episode_dir.name} 처리 완료.")
+    return True
 
-
-def convert_tactile_to_list(tactile_data):    #converting sequence of sensor's id to sequence of tactile values
-    CONVERT_ID_GLOVE_TO_RENDER ={
+def convert_tactile_to_list(tactile_data):    # converting sequence of sensor's id to sequence of tactile values
+    CONVERT_ID_GLOVE_TO_RENDER = {
         0: 4,
         1: 3,
         2: 2,
@@ -378,56 +369,69 @@ def convert_tactile_to_list(tactile_data):    #converting sequence of sensor's i
     right_sensor_ids = ['128', '129', '130', '131', '132', '133']
     left_sensor_ids  = ['134', '135', '136', '137', '138', '139']
     
+    # 1. 전체 tactile 데이터에서 각 센서 id별 element-wise 최소값 계산
     init_tactile_data = {}
+    all_sensor_ids = right_sensor_ids + left_sensor_ids
+    for sensor_id in all_sensor_ids:
+        init_tactile_data[sensor_id] = None
+        
     for entry in tactile_data:
-        entry = entry['tactile']
-        for right_id in right_sensor_ids:
-            if (right_id in entry) and (right_id not in init_tactile_data):
-                init_tactile_data[right_id] = entry[right_id]
-        for left_id in left_sensor_ids:
-            if (left_id in entry) and (left_id not in init_tactile_data):
-                init_tactile_data[left_id] = entry[left_id]
-        if len(init_tactile_data) == len(right_sensor_ids) + len(left_sensor_ids):
-            break
-
-    if len(init_tactile_data) != len(right_sensor_ids) + len(left_sensor_ids):
-        raise ValueError("init tactile data not found")
-
+        tactile_entry = entry['tactile']
+        for sensor_id in all_sensor_ids:
+            if sensor_id in tactile_entry:
+                # 센서 데이터 배열로 변환 (형태는 [4,4,3]임을 가정)
+                current_value = np.array(tactile_entry[sensor_id]['data'])
+                # 아직 최소값이 없다면 초기값을 설정, 있다면 element-wise 최소값 업데이트
+                if init_tactile_data[sensor_id] is None:
+                    init_tactile_data[sensor_id] = current_value
+                # else:
+                #     init_tactile_data[sensor_id] = np.minimum(init_tactile_data[sensor_id], current_value)
+                    
+    # 모든 센서의 최소값을 찾았는지 확인 (없으면 오류 처리)
+    if any(init_tactile_data[sensor_id] is None for sensor_id in all_sensor_ids):
+        # raise ValueError("init tactile data not found")
+        return [], []
+    
+    # # 2. 첫 3개 항목의 tactile 데이터를 최소값으로 강제 설정 (보정 용도)
+    # for entry in tactile_data[:10]:
+    #     tactile_entry = entry['tactile']
+    #     for sensor_id in all_sensor_ids:
+    #         tactile_entry[sensor_id] = {'data': init_tactile_data[sensor_id].tolist()}
+    
+    # 3. 전체 tactile 데이터에서 누락된 센서 id가 있다면 해당 최소값으로 채움
     for entry in tactile_data:
-        entry = entry['tactile']
-        for right_id in right_sensor_ids:
-            if right_id not in entry:
-                entry[right_id] = init_tactile_data[right_id]
-        for left_id in left_sensor_ids:
-            if left_id not in entry:
-                entry[left_id] = init_tactile_data[left_id]
-                
+        tactile_entry = entry['tactile']
+        for sensor_id in all_sensor_ids:
+            if sensor_id not in tactile_entry:
+                tactile_entry[sensor_id] = {'data': init_tactile_data[sensor_id].tolist()}
+    
+    # 이후 기존의 tactile 데이터를 생성하는 부분
     tactile_left_list, tactile_right_list = [], []
     for entry in tactile_data:
-        entry = entry['tactile']
+        tactile_entry = entry['tactile']
         left_arrays = []
         right_arrays = []
         for left_id in left_sensor_ids:
-            sensor_value = np.array(entry[left_id]['data']).reshape(4, 4, 3)
-            init_value = np.array(init_tactile_data[left_id]['data']).reshape(4, 4, 3)
+            sensor_value = np.array(tactile_entry[left_id]['data']).reshape(4, 4, 3)
+            init_value = np.array(init_tactile_data[left_id]).reshape(4, 4, 3)
+            # 두 값 차이의 절대값을 사용 (보정값)
             sensor_value = np.abs(sensor_value - init_value)
             left_arrays.append(sensor_value)
         for right_id in right_sensor_ids:
-            sensor_value = np.array(entry[right_id]['data']).reshape(4, 4, 3)
+            sensor_value = np.array(tactile_entry[right_id]['data']).reshape(4, 4, 3)
+            init_value = np.array(init_tactile_data[right_id]).reshape(4, 4, 3)
             sensor_value = np.abs(sensor_value - init_value)
             right_arrays.append(sensor_value)
 
         left_arr = np.stack(left_arrays, axis=0).reshape(24, 4, 3)
         right_arr = np.stack(right_arrays, axis=0).reshape(24, 4, 3)
-        
+
         ordered_indices = [k for k, v in sorted(CONVERT_ID_GLOVE_TO_RENDER.items(), key=lambda item: item[1])]
         left_arr = left_arr[ordered_indices]
         right_arr = right_arr[ordered_indices]
-        
+
         tactile_left_list.append(left_arr)
         tactile_right_list.append(right_arr)
-        
-
 
     return tactile_left_list, tactile_right_list
 
@@ -458,7 +462,7 @@ def main():
                         help='Overlay 방식 선택 (joint: skeleton joint 기반 등)')
     parser.add_argument('--with_bg', dest='with_bg', action='store_true', default=False,
                         help='배경 렌더링 활성화')
-    parser.add_argument('--tactile_threshold', type=float, default=2.0,
+    parser.add_argument('--tactile_threshold', type=float, default=1.0,
                         help='tactile 값 임계치 설정')
     parser.add_argument('--tactile_norm', dest='tactile_norm', action='store_true', default=True,
                         help='tactile 값 정규화 활성화 (False면 각 축별로 따로 저장)')
@@ -476,10 +480,46 @@ def main():
     episode_dirs = [str(ep) for ep in sorted(raw_dataset_path.iterdir()) if ep.is_dir()]
 
     args_dict = vars(args)
+    
+    args = argparse.Namespace(**args_dict)
+    download_models(CACHE_DIR_HAMER)
+    model, model_cfg = load_hamer(args.checkpoint)
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    model = model.to(device)
+    model.eval()
+
+    # body detector 설정
+    from hamer.utils.utils_detectron2 import DefaultPredictor_Lazy
+    if args.body_detector == 'vitdet':
+        from detectron2.config import LazyConfig
+        import hamer
+        cfg_path = Path(hamer.__file__).parent / 'configs' / 'cascade_mask_rcnn_vitdet_h_75ep.py'
+        detectron2_cfg = LazyConfig.load(str(cfg_path))
+        detectron2_cfg.train.init_checkpoint = "https://dl.fbaipublicfiles.com/detectron2/ViTDet/COCO/cascade_mask_rcnn_vitdet_h/f328730692/model_final_f05665.pkl"
+        for i in range(3):
+            detectron2_cfg.model.roi_heads.box_predictors[i].test_score_thresh = 0.25
+        detector = DefaultPredictor_Lazy(detectron2_cfg)
+    elif args.body_detector == 'regnety':
+        from detectron2 import model_zoo
+        from detectron2.config import get_cfg
+        detectron2_cfg = model_zoo.get_config('new_baselines/mask_rcnn_regnety_4gf_dds_FPN_400ep_LSJ.py', trained=True)
+        detectron2_cfg.model.roi_heads.box_predictor.test_score_thresh = 0.5
+        detectron2_cfg.model.roi_heads.box_predictor.test_nms_thresh   = 0.4
+        detector = DefaultPredictor_Lazy(detectron2_cfg)
+
+    cpm = ViTPoseModel(device)
+    renderer = Renderer(model_cfg, faces=model.mano.faces)
 
     # 기존의 병렬 처리 대신 순차적으로 처리
-    for ep in episode_dirs:
-        process_episode(ep, args_dict)
+    from tqdm import tqdm
+    for ep in tqdm(episode_dirs):
+        try:
+            success = process_episode(ep, args, model=model, model_cfg=model_cfg, detector=detector, cpm=cpm, renderer=renderer, device=device)
+            if not success:
+                print(f"에피소드 {ep} 처리 실패.")
+        except Exception as e:
+            print(f"에피소드 {ep} 처리 중 오류 발생: {e}")
+            continue
 
 
 if __name__ == '__main__':

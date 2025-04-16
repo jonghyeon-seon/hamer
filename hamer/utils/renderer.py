@@ -737,7 +737,7 @@ class Renderer:
             scene_overlay.add_node(node)
 
         if overlay_type == 'joint':
-            norm = mcolors.Normalize(vmin=0, vmax=16)
+            norm = mcolors.Normalize(vmin=0, vmax=10)
             cmap_func = plt.get_cmap(joint_cmap)
 
             for i, (vvv, ttt, sss) in enumerate(zip(vertices, cam_t, is_right)):
